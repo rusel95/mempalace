@@ -203,6 +203,8 @@ def cmd_repair(args):
     offset = 0
     while offset < total:
         batch = col.get(limit=read_batch, offset=offset, include=["documents", "metadatas"])
+        if not batch["ids"]:
+            break
         all_ids.extend(batch["ids"])
         all_docs.extend(batch["documents"])
         all_metas.extend(batch["metadatas"])
@@ -211,7 +213,10 @@ def cmd_repair(args):
             print(f"  Read {offset}/{total}")
     print(f"  Extracted {len(all_ids)} drawers")
 
-    # Release the old client before creating the new palace
+    # Release the old client before creating the new palace.
+    # Note: del relies on CPython refcounting to close SQLite handles.
+    # This is reliable in practice since chromadb uses no circular refs
+    # in its client path, but we del explicitly to make the intent clear.
     del col
     del client
 
@@ -226,16 +231,21 @@ def cmd_repair(args):
 
     write_batch = 100
     filed = 0
-    for i in range(0, len(all_ids), write_batch):
-        end = min(i + write_batch, len(all_ids))
-        new_col.add(
-            documents=all_docs[i:end],
-            ids=all_ids[i:end],
-            metadatas=all_metas[i:end],
-        )
-        filed += end - i
-        if filed % 2000 == 0 or filed >= len(all_ids):
-            print(f"  Written {filed}/{len(all_ids)}")
+    try:
+        for i in range(0, len(all_ids), write_batch):
+            end = min(i + write_batch, len(all_ids))
+            new_col.add(
+                documents=all_docs[i:end],
+                ids=all_ids[i:end],
+                metadatas=all_metas[i:end],
+            )
+            filed += end - i
+            if filed % 2000 == 0 or filed >= len(all_ids):
+                print(f"  Written {filed}/{len(all_ids)}")
+    except Exception as e:
+        print(f"\n  ERROR during rebuild at {filed}/{len(all_ids)}: {e}")
+        print(f"  Partial rebuild at {rebuild_path} — original palace untouched.")
+        sys.exit(1)
 
     # Verify the rebuild
     rebuilt_count = new_col.count()
@@ -247,7 +257,10 @@ def cmd_repair(args):
     del new_col
     del new_client
 
-    # Swap: original → backup, rebuild → palace
+    # Swap: original → backup, rebuild → palace.
+    # Note: this is two sequential os.rename calls — not atomic together.
+    # If a crash occurs between them, the _rebuild directory still exists
+    # and can be manually renamed to recover.
     backup_path = palace_path + ".backup"
     if os.path.exists(backup_path):
         shutil.rmtree(backup_path)
