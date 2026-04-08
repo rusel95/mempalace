@@ -412,24 +412,26 @@ def file_already_mined(collection, source_file: str) -> bool:
 
 
 def add_drawer(
-    collection, wing: str, room: str, content: str, source_file: str, chunk_index: int, agent: str
+    collection, wing: str, room: str, content: str, source_file: str, chunk_index: int, agent: str,
+    content_hash: str = "",
 ):
     """Add one drawer to the palace."""
     drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((source_file + str(chunk_index)).encode(), usedforsecurity=False).hexdigest()[:16]}"
+    meta = {
+        "wing": wing,
+        "room": room,
+        "source_file": source_file,
+        "chunk_index": chunk_index,
+        "added_by": agent,
+        "filed_at": datetime.now().isoformat(),
+    }
+    if content_hash:
+        meta["content_hash"] = content_hash
     try:
         collection.add(
             documents=[content],
             ids=[drawer_id],
-            metadatas=[
-                {
-                    "wing": wing,
-                    "room": room,
-                    "source_file": source_file,
-                    "chunk_index": chunk_index,
-                    "added_by": agent,
-                    "filed_at": datetime.now().isoformat(),
-                }
-            ],
+            metadatas=[meta],
         )
         return True
     except Exception as e:
@@ -470,6 +472,7 @@ def process_file(
 
     room = detect_room(filepath, content, rooms, project_path)
     chunks = chunk_text(content, source_file)
+    file_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
     if dry_run:
         print(f"    [DRY RUN] {filepath.name} → room:{room} ({len(chunks)} drawers)")
@@ -485,6 +488,7 @@ def process_file(
             source_file=source_file,
             chunk_index=chunk["chunk_index"],
             agent=agent,
+            content_hash=file_hash,
         )
         if added:
             drawers_added += 1
