@@ -1,0 +1,86 @@
+#!/bin/bash
+# MEMPALACE FRESHNESS HOOK — Check palace freshness on session start
+#
+# Runs as a "Notification" or "Stop" hook to tell the AI
+# whether the palace is current or has stale memories.
+#
+# === INSTALL ===
+# Add to .claude/settings.local.json:
+#
+#   "hooks": {
+#     "Stop": [{
+#       "matcher": "*",
+#       "hooks": [{
+#         "type": "command",
+#         "command": "/absolute/path/to/mempal_freshness_hook.sh",
+#         "timeout": 30
+#       }]
+#     }]
+#   }
+#
+# === HOW IT WORKS ===
+#
+# 1. Reads stdin for session context (JSON with stop_hook_active flag)
+# 2. If stop_hook_active is true, allows AI to stop (prevents loops)
+# 3. Runs 'mempalace sync --dry-run' on first call per session
+# 4. If stale files detected, BLOCKS the AI from stopping
+#    and returns a reason asking it to call mempalace_sync_status
+# 5. On subsequent calls, allows normal stop
+#
+# === CONFIGURATION ===
+#
+# Set CHECK_DIR to limit freshness check to a specific directory.
+# Leave empty to check all source files.
+CHECK_DIR=""
+# Maximum time between checks (seconds). Default: once per session.
+CHECK_INTERVAL=3600
+
+# ─── Implementation ──────────────────────────────────────
+
+set -euo pipefail
+
+# Read stdin
+INPUT=$(cat)
+
+# Check if we're in a save cycle (prevent infinite loop)
+STOP_ACTIVE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stop_hook_active', False))" 2>/dev/null || echo "False")
+
+if [ "$STOP_ACTIVE" = "True" ] || [ "$STOP_ACTIVE" = "true" ]; then
+    echo '{"decision": "allow"}'
+    exit 0
+fi
+
+# Session tracking — only check once per session
+SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id', 'unknown'))" 2>/dev/null || echo "unknown")
+STAMP_FILE="/tmp/mempalace_freshness_${SESSION_ID}"
+
+if [ -f "$STAMP_FILE" ]; then
+    LAST_CHECK=$(cat "$STAMP_FILE")
+    NOW=$(date +%s)
+    ELAPSED=$((NOW - LAST_CHECK))
+    if [ "$ELAPSED" -lt "$CHECK_INTERVAL" ]; then
+        echo '{"decision": "allow"}'
+        exit 0
+    fi
+fi
+
+# Run freshness check
+SYNC_ARGS="--dry-run"
+if [ -n "$CHECK_DIR" ]; then
+    SYNC_ARGS="$SYNC_ARGS --dir $CHECK_DIR"
+fi
+
+SYNC_OUTPUT=$(python3 -m mempalace sync $SYNC_ARGS 2>/dev/null || echo "")
+STALE_COUNT=$(echo "$SYNC_OUTPUT" | grep -oP 'Stale \(changed\):\s+\K\d+' 2>/dev/null || echo "0")
+
+# Record check time
+date +%s > "$STAMP_FILE"
+
+if [ "$STALE_COUNT" -gt "0" ]; then
+    # Stale files found — tell AI to check
+    cat <<ENDJSON
+{"decision": "block", "reason": "Palace freshness check: $STALE_COUNT source files have changed since last mine. Call mempalace_sync_status to see details and get re-mine commands. This ensures your memory is current before answering questions."}
+ENDJSON
+else
+    echo '{"decision": "allow"}'
+fi
