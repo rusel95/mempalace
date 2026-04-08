@@ -302,6 +302,12 @@ def mine_convos(
             files_skipped += 1
             continue
 
+        # Read raw content for hashing (before normalize transforms it)
+        try:
+            raw_content = filepath.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+
         # Normalize format
         try:
             content = normalize(str(filepath))
@@ -350,8 +356,8 @@ def mine_convos(
         if extract_mode != "general":
             room_counts[room] += 1
 
-        # File each chunk
-        file_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+        # File each chunk — hash raw content so sync can compare without normalize
+        file_hash = hashlib.md5(raw_content.encode(), usedforsecurity=False).hexdigest()
         drawers_added = 0
         for chunk in chunks:
             chunk_room = chunk.get("memory_type", room) if extract_mode == "general" else room

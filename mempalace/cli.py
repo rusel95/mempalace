@@ -369,6 +369,7 @@ def cmd_sync(args):
                     "hash": meta.get("content_hash", ""),
                     "drawer_ids": [],
                     "wing": meta.get("wing", ""),
+                    "ingest_mode": meta.get("ingest_mode", ""),
                 }
             source_files[sf]["drawer_ids"].append(drawer_id)
         offset += len(batch["ids"])
@@ -489,18 +490,11 @@ def cmd_sync(args):
     if stale:
         print(f"\n  Re-mining {len(stale)} changed files...")
 
-        # Detect mode from existing metadata
+        # Use ingest_mode captured during scan (before deletion)
         for sf in stale:
             info = source_files[sf]
             wing = info["wing"]
-
-            # Check if this was a convo or project mine
-            sample = col.get(
-                where={"source_file": sf}, limit=1, include=["metadatas"]
-            )
-            is_convo = False
-            if sample["metadatas"]:
-                is_convo = sample["metadatas"][0].get("ingest_mode") == "convos"
+            is_convo = info.get("ingest_mode") == "convos"
 
             if is_convo:
                 from .convo_miner import mine_convos
