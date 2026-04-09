@@ -193,7 +193,7 @@ def _try_claude_ai_json(data) -> Optional[str]:
                 transcripts.append(t)
         if transcripts:
             return "\n\n".join(transcripts)
-        return None
+        return ""  # Format identified as Claude.ai but all convos empty — don't fall through to Slack parser
 
     # Flat messages list
     messages = []

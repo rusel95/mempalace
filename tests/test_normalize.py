@@ -861,3 +861,25 @@ def test_slack_json_still_works():
     os.unlink(f.name)
     assert "Slack message 1" in result
     assert "Slack reply 1" in result
+
+
+def test_transcript_has_blank_line_separators():
+    """Multi-turn transcripts must have blank lines between exchanges."""
+    import json, tempfile, os
+    from mempalace.normalize import normalize
+
+    data = [
+        {"sender": "human", "text": "Question one"},
+        {"sender": "assistant", "text": "Answer one"},
+        {"sender": "human", "text": "Question two"},
+        {"sender": "assistant", "text": "Answer two"},
+    ]
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(data, f)
+    f.close()
+    result = normalize(f.name)
+    os.unlink(f.name)
+    assert result is not None
+    # Each exchange (Q+A) should be separated by a blank line
+    exchanges = [block.strip() for block in result.split("\n\n") if block.strip()]
+    assert len(exchanges) >= 2, f"Expected 2+ exchange blocks separated by blank lines, got {len(exchanges)}: {result!r}"
