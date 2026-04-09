@@ -389,7 +389,19 @@ def tool_add_drawer(
     if not col:
         return _no_palace()
 
-    # Duplicate check
+    # Use content-derived source so drawer ID is deterministic for idempotency
+    effective_source = source_file or f"mcp:{hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()}"
+
+    # Idempotency: if this exact drawer ID already exists, return success
+    drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((effective_source + '0').encode(), usedforsecurity=False).hexdigest()[:16]}"
+    try:
+        existing = col.get(ids=[drawer_id])
+        if existing["ids"]:
+            return {"success": True, "reason": "already_exists", "wing": wing, "room": room}
+    except Exception:
+        pass
+
+    # Duplicate check (similar but not identical content)
     dup = tool_check_duplicate(content, threshold=0.9)
     if dup.get("is_duplicate"):
         return {
@@ -397,9 +409,6 @@ def tool_add_drawer(
             "reason": "duplicate",
             "matches": dup["matches"],
         }
-
-    # Use content-derived source so drawer ID is deterministic for idempotency
-    effective_source = source_file or f"mcp:{hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()}"
 
     try:
         added = add_drawer(

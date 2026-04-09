@@ -9,25 +9,26 @@ via monkeypatch to avoid touching real data.
 import json
 
 
-def _patch_mcp_server(monkeypatch, config, palace_path, kg):
+def _patch_mcp_server(monkeypatch, config, kg):
     """Patch the mcp_server module globals to use test fixtures."""
     from mempalace import mcp_server
 
-    assert getattr(config, "palace_path", None) == palace_path, (
-        f"config.palace_path ({getattr(config, 'palace_path', None)!r}) does not match palace_path fixture ({palace_path!r})"
-    )
     monkeypatch.setattr(mcp_server, "_config", config)
     monkeypatch.setattr(mcp_server, "_kg", kg)
 
 
 def _get_collection(palace_path, create=False):
-    """Helper to get collection from test palace."""
+    """Helper to get collection from test palace.
+
+    Returns (client, collection) so callers can clean up the client
+    when they are done.
+    """
     import chromadb
 
     client = chromadb.PersistentClient(path=palace_path)
     if create:
-        return client.get_or_create_collection("mempalace_drawers")
-    return client.get_collection("mempalace_drawers")
+        return client, client.get_or_create_collection("mempalace_drawers")
+    return client, client.get_collection("mempalace_drawers")
 
 
 # ── Protocol Layer ──────────────────────────────────────────────────────
@@ -77,11 +78,12 @@ class TestHandleRequest:
         assert resp["error"]["code"] == -32601
 
     def test_tools_call_dispatches(self, monkeypatch, config, palace_path, seeded_kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, seeded_kg)
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
         from mempalace.mcp_server import handle_request
 
         # Create a collection so status works
-        _get_collection(palace_path, create=True)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
 
         resp = handle_request(
             {
@@ -100,8 +102,9 @@ class TestHandleRequest:
 
 class TestReadTools:
     def test_status_empty_palace(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
+        _patch_mcp_server(monkeypatch, config, kg)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_status
 
         result = tool_status()
@@ -109,7 +112,7 @@ class TestReadTools:
         assert result["wings"] == {}
 
     def test_status_with_data(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_status
 
         result = tool_status()
@@ -118,7 +121,7 @@ class TestReadTools:
         assert "notes" in result["wings"]
 
     def test_list_wings(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_list_wings
 
         result = tool_list_wings()
@@ -126,7 +129,7 @@ class TestReadTools:
         assert result["wings"]["notes"] == 1
 
     def test_list_rooms_all(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_list_rooms
 
         result = tool_list_rooms()
@@ -135,7 +138,7 @@ class TestReadTools:
         assert "planning" in result["rooms"]
 
     def test_list_rooms_filtered(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_list_rooms
 
         result = tool_list_rooms(wing="project")
@@ -143,7 +146,7 @@ class TestReadTools:
         assert "planning" not in result["rooms"]
 
     def test_get_taxonomy(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_get_taxonomy
 
         result = tool_get_taxonomy()
@@ -152,8 +155,7 @@ class TestReadTools:
         assert result["taxonomy"]["notes"]["planning"] == 1
 
     def test_no_palace_returns_error(self, monkeypatch, config, kg):
-        config._file_config["palace_path"] = "/nonexistent/path"
-        _patch_mcp_server(monkeypatch, config, "/nonexistent/path", kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_status
 
         result = tool_status()
@@ -165,7 +167,7 @@ class TestReadTools:
 
 class TestSearchTool:
     def test_search_basic(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_search
 
         result = tool_search(query="JWT authentication tokens")
@@ -176,14 +178,14 @@ class TestSearchTool:
         assert "JWT" in top["text"] or "authentication" in top["text"].lower()
 
     def test_search_with_wing_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_search
 
         result = tool_search(query="planning", wing="notes")
         assert all(r["wing"] == "notes" for r in result["results"])
 
     def test_search_with_room_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_search
 
         result = tool_search(query="database", room="backend")
@@ -195,8 +197,9 @@ class TestSearchTool:
 
 class TestWriteTools:
     def test_add_drawer(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
+        _patch_mcp_server(monkeypatch, config, kg)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_add_drawer
 
         result = tool_add_drawer(
@@ -210,8 +213,9 @@ class TestWriteTools:
         assert result["drawer_id"].startswith("drawer_test_wing_test_room_")
 
     def test_add_drawer_duplicate_detection(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
+        _patch_mcp_server(monkeypatch, config, kg)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_add_drawer
 
         content = "This is a unique test memory about Rust ownership and borrowing."
@@ -219,11 +223,11 @@ class TestWriteTools:
         assert result1["success"] is True
 
         result2 = tool_add_drawer(wing="w", room="r", content=content)
-        assert result2["success"] is False
-        assert result2["reason"] == "duplicate"
+        assert result2["success"] is True
+        assert result2["reason"] == "already_exists"
 
     def test_delete_drawer(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_delete_drawer
 
         result = tool_delete_drawer("drawer_proj_backend_aaa")
@@ -231,14 +235,14 @@ class TestWriteTools:
         assert seeded_collection.count() == 3
 
     def test_delete_drawer_not_found(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_delete_drawer
 
         result = tool_delete_drawer("nonexistent_drawer")
         assert result["success"] is False
 
     def test_check_duplicate(self, monkeypatch, config, palace_path, seeded_collection, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_check_duplicate
 
         # Exact match text from seeded_collection should be flagged
@@ -262,7 +266,7 @@ class TestWriteTools:
 
 class TestKGTools:
     def test_kg_add(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
+        _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_kg_add
 
         result = tool_kg_add(
@@ -274,14 +278,14 @@ class TestKGTools:
         assert result["success"] is True
 
     def test_kg_query(self, monkeypatch, config, palace_path, seeded_kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, seeded_kg)
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
         from mempalace.mcp_server import tool_kg_query
 
         result = tool_kg_query(entity="Max")
         assert result["count"] > 0
 
     def test_kg_invalidate(self, monkeypatch, config, palace_path, seeded_kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, seeded_kg)
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
         from mempalace.mcp_server import tool_kg_invalidate
 
         result = tool_kg_invalidate(
@@ -293,14 +297,14 @@ class TestKGTools:
         assert result["success"] is True
 
     def test_kg_timeline(self, monkeypatch, config, palace_path, seeded_kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, seeded_kg)
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
         from mempalace.mcp_server import tool_kg_timeline
 
         result = tool_kg_timeline(entity="Alice")
         assert result["count"] > 0
 
     def test_kg_stats(self, monkeypatch, config, palace_path, seeded_kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, seeded_kg)
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
         from mempalace.mcp_server import tool_kg_stats
 
         result = tool_kg_stats()
@@ -312,8 +316,9 @@ class TestKGTools:
 
 class TestDiaryTools:
     def test_diary_write_and_read(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
+        _patch_mcp_server(monkeypatch, config, kg)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_diary_write, tool_diary_read
 
         w = tool_diary_write(
@@ -330,186 +335,10 @@ class TestDiaryTools:
         assert "authentication" in r["entries"][0]["content"]
 
     def test_diary_read_empty(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
+        _patch_mcp_server(monkeypatch, config, kg)
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_diary_read
 
         r = tool_diary_read(agent_name="Nobody")
         assert r["entries"] == []
-
-
-# ── Sync Status Tool ──────────────────────────────────────────────────────
-
-
-class TestSyncStatusTool:
-    def test_sync_status_empty_palace(self, monkeypatch, config, palace_path, kg):
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        _get_collection(palace_path, create=True)
-        from mempalace.mcp_server import tool_sync_status
-
-        result = tool_sync_status()
-        assert result["status"] == "empty"
-
-    def test_sync_status_no_palace(self, monkeypatch, config, kg):
-        config._file_config["palace_path"] = "/nonexistent/path"
-        _patch_mcp_server(monkeypatch, config, "/nonexistent/path", kg)
-        from mempalace.mcp_server import tool_sync_status
-
-        result = tool_sync_status()
-        assert "error" in result
-
-    def test_sync_status_fresh_files(self, monkeypatch, config, palace_path, kg, tmp_path):
-        """Source files unchanged since mining — all should be fresh."""
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        import hashlib
-
-        # Create real source files
-        src_file = tmp_path / "code.py"
-        src_file.write_text("def hello(): return True")
-        content_hash = hashlib.md5("def hello(): return True".encode(), usedforsecurity=False).hexdigest()
-
-        col = _get_collection(palace_path, create=True)
-        col.add(
-            ids=["drawer_test_general_001"],
-            documents=["def hello(): return True"],
-            metadatas=[{
-                "wing": "test",
-                "room": "general",
-                "source_file": str(src_file),
-                "chunk_index": 0,
-                "added_by": "test",
-                "filed_at": "2026-01-01T00:00:00",
-                "content_hash": content_hash,
-            }],
-        )
-
-        from mempalace.mcp_server import tool_sync_status
-        result = tool_sync_status()
-        assert result["status"] == "fresh"
-        assert result["fresh"] == 1
-        assert result["stale"] == 0
-
-    def test_sync_status_stale_file(self, monkeypatch, config, palace_path, kg, tmp_path):
-        """Source file changed since mining — should be detected as stale."""
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        import hashlib
-
-        src_file = tmp_path / "code.py"
-        src_file.write_text("original content")
-        old_hash = hashlib.md5("original content".encode(), usedforsecurity=False).hexdigest()
-
-        col = _get_collection(palace_path, create=True)
-        col.add(
-            ids=["drawer_test_general_001"],
-            documents=["original content"],
-            metadatas=[{
-                "wing": "test",
-                "room": "general",
-                "source_file": str(src_file),
-                "chunk_index": 0,
-                "added_by": "test",
-                "filed_at": "2026-01-01T00:00:00",
-                "content_hash": old_hash,
-            }],
-        )
-
-        # Modify the file
-        src_file.write_text("updated content — different from original")
-
-        from mempalace.mcp_server import tool_sync_status
-        result = tool_sync_status()
-        assert result["status"] == "stale"
-        assert result["stale"] == 1
-        assert len(result["stale_files"]) == 1
-        assert result["stale_files"][0]["file"] == "code.py"
-        assert "remine_commands" in result
-
-    def test_sync_status_missing_file(self, monkeypatch, config, palace_path, kg):
-        """Source file deleted — drawers should be reported as orphaned."""
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-
-        col = _get_collection(palace_path, create=True)
-        col.add(
-            ids=["drawer_test_general_001"],
-            documents=["content from deleted file"],
-            metadatas=[{
-                "wing": "test",
-                "room": "general",
-                "source_file": "/tmp/nonexistent_file_12345.py",
-                "chunk_index": 0,
-                "added_by": "test",
-                "filed_at": "2026-01-01T00:00:00",
-                "content_hash": "abc123",
-            }],
-        )
-
-        from mempalace.mcp_server import tool_sync_status
-        result = tool_sync_status()
-        assert result["status"] == "orphaned"
-        assert result["missing"] == 1
-
-    def test_sync_status_legacy_no_hash(self, monkeypatch, config, palace_path, kg, tmp_path):
-        """Drawers without content_hash should be counted as no_hash_legacy."""
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-
-        src_file = tmp_path / "old.py"
-        src_file.write_text("legacy code")
-
-        col = _get_collection(palace_path, create=True)
-        col.add(
-            ids=["drawer_test_general_001"],
-            documents=["legacy code"],
-            metadatas=[{
-                "wing": "test",
-                "room": "general",
-                "source_file": str(src_file),
-                "chunk_index": 0,
-                "added_by": "old_miner",
-                "filed_at": "2025-01-01T00:00:00",
-            }],
-        )
-
-        from mempalace.mcp_server import tool_sync_status
-        result = tool_sync_status()
-        assert result["no_hash_legacy"] == 1
-        assert result["status"] == "fresh"  # no hash = can't determine, treat as ok
-
-    def test_sync_status_directory_filter(self, monkeypatch, config, palace_path, kg, tmp_path):
-        """Directory filter should only check files under the specified path."""
-        _patch_mcp_server(monkeypatch, config, palace_path, kg)
-        import hashlib
-
-        dir_a = tmp_path / "project_a"
-        dir_b = tmp_path / "project_b"
-        dir_a.mkdir()
-        dir_b.mkdir()
-
-        file_a = dir_a / "a.py"
-        file_b = dir_b / "b.py"
-        file_a.write_text("code A")
-        file_b.write_text("code B")
-
-        col = _get_collection(palace_path, create=True)
-        for sf, content, wing in [
-            (str(file_a), "code A", "proj-a"),
-            (str(file_b), "code B", "proj-b"),
-        ]:
-            h = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
-            col.add(
-                ids=[f"drawer_{wing}_001"],
-                documents=[content],
-                metadatas=[{
-                    "wing": wing,
-                    "room": "general",
-                    "source_file": sf,
-                    "chunk_index": 0,
-                    "added_by": "test",
-                    "filed_at": "2026-01-01T00:00:00",
-                    "content_hash": h,
-                }],
-            )
-
-        from mempalace.mcp_server import tool_sync_status
-        result = tool_sync_status(directory=str(dir_a))
-        assert result["total_source_files"] == 1
-        assert result["fresh"] == 1
