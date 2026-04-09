@@ -237,7 +237,7 @@ def mine_convos(
     limit: int = 0,
     dry_run: bool = False,
     extract_mode: str = "exchange",
-    filepath_filter: "Path | None" = None,
+    filepath_filter: str = None,
 ):
     """Mine a directory of conversation files into the palace.
 
@@ -251,9 +251,9 @@ def mine_convos(
         wing = convo_path.name.lower().replace(" ", "_").replace("-", "_")
 
     files = scan_convos(convo_dir)
-    if filepath_filter is not None:
-        files = [f for f in files if f.resolve() == filepath_filter.resolve()]
-    elif limit > 0:
+    if filepath_filter:
+        files = [f for f in files if str(f) == filepath_filter]
+    if limit > 0:
         files = files[:limit]
 
     print(f"\n{'=' * 55}")
@@ -281,10 +281,9 @@ def mine_convos(
             files_skipped += 1
             continue
 
-        # Hash raw content before normalize transforms it
+        # Read raw content for hashing (before normalize transforms it)
         try:
-            from .miner import file_content_hash
-            file_hash = file_content_hash(filepath)
+            raw_content = filepath.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
 
@@ -336,7 +335,8 @@ def mine_convos(
         if extract_mode != "general":
             room_counts[room] += 1
 
-        # File each chunk
+        # File each chunk — hash raw content so sync can compare without normalize
+        file_hash = hashlib.md5(raw_content.encode(), usedforsecurity=False).hexdigest()
         drawers_added = 0
         for chunk in chunks:
             chunk_room = chunk.get("memory_type", room) if extract_mode == "general" else room

@@ -208,7 +208,14 @@ def cmd_status(args):
 
 
 def cmd_repair(args):
-    """Rebuild palace vector index from SQLite metadata."""
+    """Rebuild palace vector index by migrating to a fresh collection.
+
+    The previous approach (delete_collection + create_collection on the same
+    path) can segfault when the HNSW index is corrupted — the delete operation
+    itself touches the broken segment. This version reads all data via get()
+    (which bypasses HNSW), writes to a brand-new palace at a temporary path,
+    then swaps directories. The original palace is preserved as a backup.
+    """
     import chromadb
     import shutil
 
@@ -223,7 +230,8 @@ def cmd_repair(args):
     print(f"{'=' * 55}\n")
     print(f"  Palace: {palace_path}")
 
-    # Try to read existing drawers
+    # Read existing drawers via get() — this bypasses the HNSW index
+    # entirely, so it works even when the vector index is corrupted.
     try:
         client = chromadb.PersistentClient(path=palace_path)
         col = client.get_collection("mempalace_drawers")
@@ -238,84 +246,84 @@ def cmd_repair(args):
         print("  Nothing to repair.")
         return
 
-    # Extract all drawers in batches
+    # Extract all drawers in small batches (large batches can OOM on big palaces)
     print("\n  Extracting drawers...")
-    batch_size = 5000
+    read_batch = 500
     all_ids = []
     all_docs = []
     all_metas = []
     offset = 0
     while offset < total:
-        batch = col.get(limit=batch_size, offset=offset, include=["documents", "metadatas"])
+        batch = col.get(limit=read_batch, offset=offset, include=["documents", "metadatas"])
+        if not batch["ids"]:
+            break
         all_ids.extend(batch["ids"])
         all_docs.extend(batch["documents"])
         all_metas.extend(batch["metadatas"])
-        offset += batch_size
+        offset += len(batch["ids"])
+        if offset % 5000 == 0 or offset >= total:
+            print(f"  Read {offset}/{total}")
     print(f"  Extracted {len(all_ids)} drawers")
 
-    # Backup and rebuild
+    # Release the old client before creating the new palace.
+    del col
+    del client
+
     palace_path = palace_path.rstrip(os.sep)
+    rebuild_path = palace_path + "_rebuild"
+    if os.path.exists(rebuild_path):
+        shutil.rmtree(rebuild_path)
+
+    print("\n  Rebuilding into fresh palace...")
+    new_client = chromadb.PersistentClient(path=rebuild_path)
+    new_col = new_client.create_collection("mempalace_drawers")
+
+    write_batch = 100
+    filed = 0
+    try:
+        for i in range(0, len(all_ids), write_batch):
+            end = min(i + write_batch, len(all_ids))
+            new_col.add(
+                documents=all_docs[i:end],
+                ids=all_ids[i:end],
+                metadatas=all_metas[i:end],
+            )
+            filed += end - i
+            if filed % 2000 == 0 or filed >= len(all_ids):
+                print(f"  Written {filed}/{len(all_ids)}")
+    except Exception as e:
+        print(f"\n  ERROR during rebuild at {filed}/{len(all_ids)}: {e}")
+        print(f"  Partial rebuild at {rebuild_path} — original palace untouched.")
+        sys.exit(1)
+
+    rebuilt_count = new_col.count()
+    if rebuilt_count != len(all_ids):
+        print(f"\n  WARNING: rebuilt {rebuilt_count} but expected {len(all_ids)}")
+        print(f"  Rebuild kept at {rebuild_path} — original untouched.")
+        return
+
+    del new_col
+    del new_client
+
+    # Swap: original -> backup, rebuild -> palace
     backup_path = palace_path + ".backup"
     if os.path.exists(backup_path):
         shutil.rmtree(backup_path)
-    print(f"  Backing up to {backup_path}...")
-    shutil.copytree(palace_path, backup_path)
-
-    print("  Rebuilding collection...")
-    client.delete_collection("mempalace_drawers")
-    new_col = client.create_collection("mempalace_drawers")
-
-    filed = 0
-    for i in range(0, len(all_ids), batch_size):
-        batch_ids = all_ids[i : i + batch_size]
-        batch_docs = all_docs[i : i + batch_size]
-        batch_metas = all_metas[i : i + batch_size]
-        new_col.add(documents=batch_docs, ids=batch_ids, metadatas=batch_metas)
-        filed += len(batch_ids)
-        print(f"  Re-filed {filed}/{len(all_ids)} drawers...")
+    print(f"\n  Backing up original to {backup_path}")
+    os.rename(palace_path, backup_path)
+    os.rename(rebuild_path, palace_path)
 
     print(f"\n  Repair complete. {filed} drawers rebuilt.")
     print(f"  Backup saved at {backup_path}")
+    print(f"  (Delete backup with: rm -rf '{backup_path}')")
     print(f"\n{'=' * 55}\n")
 
 
-def cmd_hook(args):
-    """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
-    from .hooks_cli import run_hook
-
-    run_hook(hook_name=args.hook, harness=args.harness)
-
-
-def cmd_instructions(args):
-    """Output skill instructions to stdout."""
-    from .instructions_cli import run_instructions
-
-    run_instructions(name=args.name)
-
-
-def cmd_mcp(args):
-    """Show how to wire MemPalace into MCP-capable hosts."""
-    base_server_cmd = "python -m mempalace.mcp_server"
-
-    if args.palace:
-        resolved_palace = str(Path(args.palace).expanduser())
-        server_cmd = f"{base_server_cmd} --palace {shlex.quote(resolved_palace)}"
-    else:
-        server_cmd = base_server_cmd
-
-    print("MemPalace MCP quick setup:")
-    print(f"  claude mcp add mempalace -- {server_cmd}")
-    print("\nRun the server directly:")
-    print(f"  {server_cmd}")
-
-    if not args.palace:
-        print("\nOptional custom palace:")
-        print(f"  claude mcp add mempalace -- {base_server_cmd} --palace /path/to/palace")
-        print(f"  {base_server_cmd} --palace /path/to/palace")
 
 def cmd_sync(args):
     """Sync palace with source files — re-mine changed files, report stale drawers."""
     import chromadb
+    import hashlib
     from pathlib import Path
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
@@ -450,7 +458,7 @@ def cmd_sync(args):
     re_mined = 0
 
     if stale:
-        from .miner import process_file, get_collection, load_config
+        from .miner import process_file, file_content_hash
         from .convo_miner import mine_convos
 
         print(f"  Re-syncing {len(stale)} changed files...")
@@ -458,43 +466,44 @@ def cmd_sync(args):
             info = source_files[sf]
             ids = info["drawer_ids"]
             wing = info["wing"]
-            is_convo = info.get("ingest_mode") == "convos"
+            ingest_mode = info.get("ingest_mode", "")
 
+            # Step 1: delete stale drawers for this file
+            for i in range(0, len(ids), 100):
+                col.delete(ids=ids[i:i + 100])
+            deleted += len(ids)
+
+            # Step 2: re-mine this specific file immediately
+            filepath = Path(sf)
             try:
-
-                # 1. Delete old drawers for this file
-                for i in range(0, len(ids), 100):
-                    col.delete(ids=ids[i:i + 100])
-                deleted += len(ids)
-
-                # 2. Re-mine the file immediately
-                filepath = Path(sf)
-                if is_convo:
+                if ingest_mode == "convos":
                     mine_convos(
                         convo_dir=str(filepath.parent),
                         palace_path=palace_path,
                         wing=wing,
-                        agent=args.agent,
-                        filepath_filter=filepath,
+                        agent="mempalace",
+                        filepath_filter=str(filepath),
                     )
+                    re_mined += 1
+                    print(f"    {filepath.name}: re-mined (convos)")
                 else:
-                    config = load_config(str(filepath.parent))
-                    rooms = config.get("rooms", [{"name": "general", "description": "All project files"}])
-                    process_file(
+                    rooms = [{"name": "general", "keywords": []}]
+                    n = process_file(
                         filepath=filepath,
                         project_path=filepath.parent,
                         collection=col,
                         wing=wing,
                         rooms=rooms,
-                        agent=args.agent,
+                        agent="mempalace",
                         dry_run=False,
                     )
-                re_mined += 1
-                print(f"    {filepath.name} — re-mined ({len(ids)} old drawers replaced)")
-            except SystemExit:
-                print(f"    WARNING: {Path(sf).name} — config not found, drawers deleted but re-mine skipped")
-            except Exception as exc:
-                print(f"    ERROR: {Path(sf).name} — {exc} (drawers may be missing for this file)")
+                    if n > 0:
+                        re_mined += 1
+                        print(f"    {filepath.name}: {n} drawers re-mined")
+                    else:
+                        print(f"    {filepath.name}: skipped (empty or too small)")
+            except Exception as e:
+                print(f"    {filepath.name}: ERROR — {e}")
 
     # Delete drawers for missing files (if --clean flag)
     if missing and args.clean:
@@ -512,8 +521,45 @@ def cmd_sync(args):
 
     print(f"\n  Sync complete.")
     print(f"  Deleted: {deleted} stale drawers")
-    print(f"  Re-mined: {re_mined} files")
-    print(f"\n{'=' * 55}\n")
+    if re_mined:
+        print(f"  Re-mined: {re_mined} files")
+    sep = '=' * 55
+    print(f"\n{sep}\n")
+
+
+def cmd_mcp(args):
+    """Show how to wire MemPalace into MCP-capable hosts."""
+    base_server_cmd = "python -m mempalace.mcp_server"
+
+    if args.palace:
+        resolved_palace = str(Path(args.palace).expanduser())
+        server_cmd = f"{base_server_cmd} --palace {shlex.quote(resolved_palace)}"
+    else:
+        server_cmd = base_server_cmd
+
+    print("MemPalace MCP quick setup:")
+    print(f"  claude mcp add mempalace -- {server_cmd}")
+    print("\nRun the server directly:")
+    print(f"  {server_cmd}")
+
+    if not args.palace:
+        print("\nOptional custom palace:")
+        print(f"  claude mcp add mempalace -- {base_server_cmd} --palace /path/to/palace")
+        print(f"  {base_server_cmd} --palace /path/to/palace")
+
+
+def cmd_hook(args):
+    """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
+    from .hooks_cli import run_hook
+
+    run_hook(hook_name=args.hook, harness=args.harness)
+
+
+def cmd_instructions(args):
+    """Output skill instructions to stdout."""
+    from .instructions_cli import run_instructions
+
+    run_instructions(name=args.name)
 
 
 def cmd_compress(args):
@@ -746,35 +792,6 @@ def main():
         help="Only split files containing at least N sessions (default: 2)",
     )
 
-    # hook
-    p_hook = sub.add_parser(
-        "hook",
-        help="Run hook logic (reads JSON from stdin, outputs JSON to stdout)",
-    )
-    hook_sub = p_hook.add_subparsers(dest="hook_action")
-    p_hook_run = hook_sub.add_parser("run", help="Execute a hook")
-    p_hook_run.add_argument(
-        "--hook",
-        required=True,
-        choices=["session-start", "stop", "precompact"],
-        help="Hook name to run",
-    )
-    p_hook_run.add_argument(
-        "--harness",
-        required=True,
-        choices=["claude-code", "codex"],
-        help="Harness type (determines stdin JSON format)",
-    )
-
-    # instructions
-    p_instructions = sub.add_parser(
-        "instructions",
-        help="Output skill instructions to stdout",
-    )
-    instructions_sub = p_instructions.add_subparsers(dest="instructions_name")
-    for instr_name in ["init", "search", "mine", "help", "status"]:
-        instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
-
     # sync
     p_sync = sub.add_parser(
         "sync",
@@ -795,11 +812,34 @@ def main():
         action="store_true",
         help="Show what would change without modifying the palace",
     )
-    p_sync.add_argument(
-        "--agent",
-        default="mempalace",
-        help="Your name — recorded on re-mined drawers (default: mempalace)",
+
+    # hook
+    p_hook = sub.add_parser(
+        "hook",
+        help="Run hook logic (reads JSON from stdin, outputs JSON to stdout)",
     )
+    hook_sub = p_hook.add_subparsers(dest="hook_action")
+    p_hook_run = hook_sub.add_parser("run", help="Execute a hook")
+    p_hook_run.add_argument(
+        "--hook",
+        required=True,
+        help="Hook name to run (e.g. stop, precompact)",
+    )
+    p_hook_run.add_argument(
+        "--harness",
+        default="claude-code",
+        help="AI harness calling the hook (default: claude-code)",
+    )
+
+    # instructions
+    p_instructions = sub.add_parser(
+        "instructions",
+        help="Output skill instructions to stdout",
+    )
+    instructions_sub = p_instructions.add_subparsers(dest="instructions_name")
+    for instr_name in ["init", "search", "mine", "help", "status", "sync"]:
+        instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
+
     # repair
     sub.add_parser(
         "repair",
@@ -821,7 +861,6 @@ def main():
         parser.print_help()
         return
 
-    # Handle two-level subcommands
     if args.command == "hook":
         if not getattr(args, "hook_action", None):
             p_hook.print_help()
