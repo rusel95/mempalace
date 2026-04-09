@@ -261,6 +261,7 @@ def mine_convos(
     limit: int = 0,
     dry_run: bool = False,
     extract_mode: str = "exchange",
+    filepath_filter: str = None,
 ):
     """Mine a directory of conversation files into the palace.
 
@@ -274,6 +275,8 @@ def mine_convos(
         wing = convo_path.name.lower().replace(" ", "_").replace("-", "_")
 
     files = scan_convos(convo_dir)
+    if filepath_filter:
+        files = [f for f in files if str(f) == filepath_filter]
     if limit > 0:
         files = files[:limit]
 

@@ -13,6 +13,13 @@ import hashlib
 import fnmatch
 from pathlib import Path
 from datetime import datetime
+
+
+def file_content_hash(filepath: Path) -> str:
+    """Compute content hash for a file — single source of truth for sync."""
+    content = filepath.read_text(encoding="utf-8", errors="replace").strip()
+    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+
 from collections import defaultdict
 
 import chromadb
@@ -413,7 +420,7 @@ def file_already_mined(collection, source_file: str) -> bool:
 
 def add_drawer(
     collection, wing: str, room: str, content: str, source_file: str, chunk_index: int, agent: str,
-    content_hash: str = "",
+    content_hash: str = "",  # computed from content if empty
 ):
     """Add one drawer to the palace."""
     drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((source_file + str(chunk_index)).encode(), usedforsecurity=False).hexdigest()[:16]}"
@@ -425,6 +432,8 @@ def add_drawer(
         "added_by": agent,
         "filed_at": datetime.now().isoformat(),
     }
+    if not content_hash:
+        content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
     if content_hash:
         meta["content_hash"] = content_hash
     try:
@@ -472,7 +481,7 @@ def process_file(
 
     room = detect_room(filepath, content, rooms, project_path)
     chunks = chunk_text(content, source_file)
-    file_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+    file_hash = file_content_hash(filepath)
 
     if dry_run:
         print(f"    [DRY RUN] {filepath.name} → room:{room} ({len(chunks)} drawers)")

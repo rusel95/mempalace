@@ -406,8 +406,8 @@ def cmd_sync(args):
             continue
 
         try:
-            content = Path(sf).read_text(encoding="utf-8", errors="replace").strip()
-            current_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+            from .miner import file_content_hash
+            current_hash = file_content_hash(Path(sf))
         except OSError:
             missing.append(sf)
             continue
@@ -457,20 +457,57 @@ def cmd_sync(args):
         print(f"\n{'=' * 55}\n")
         return
 
-    # Delete stale drawers and re-mine
+    # Atomic per-file: delete stale drawers then re-mine immediately
     deleted = 0
     re_mined = 0
 
-    # Delete drawers for changed files
     if stale:
-        print("  Deleting stale drawers...")
+        from .miner import process_file, file_content_hash
+        from .convo_miner import mine_convos
+
+        print(f"  Re-syncing {len(stale)} changed files...")
         for sf in stale:
-            ids = source_files[sf]["drawer_ids"]
-            # ChromaDB delete in batches
+            info = source_files[sf]
+            ids = info["drawer_ids"]
+            wing = info["wing"]
+            ingest_mode = info.get("ingest_mode", "")
+
+            # Step 1: delete stale drawers for this file
             for i in range(0, len(ids), 100):
                 col.delete(ids=ids[i:i + 100])
             deleted += len(ids)
-        print(f"  Deleted {deleted} stale drawers")
+
+            # Step 2: re-mine this specific file immediately
+            filepath = Path(sf)
+            try:
+                if ingest_mode == "convos":
+                    mine_convos(
+                        convo_dir=str(filepath.parent),
+                        palace_path=palace_path,
+                        wing=wing,
+                        agent="mempalace",
+                        filepath_filter=str(filepath),
+                    )
+                    re_mined += 1
+                    print(f"    {filepath.name}: re-mined (convos)")
+                else:
+                    rooms = [{"name": "general", "keywords": []}]
+                    n = process_file(
+                        filepath=filepath,
+                        project_path=filepath.parent,
+                        collection=col,
+                        wing=wing,
+                        rooms=rooms,
+                        agent="mempalace",
+                        dry_run=False,
+                    )
+                    if n > 0:
+                        re_mined += 1
+                        print(f"    {filepath.name}: {n} drawers re-mined")
+                    else:
+                        print(f"    {filepath.name}: skipped (empty or too small)")
+            except Exception as e:
+                print(f"    {filepath.name}: ERROR — {e}")
 
     # Delete drawers for missing files (if --clean flag)
     if missing and args.clean:
@@ -486,29 +523,26 @@ def cmd_sync(args):
     elif missing:
         print(f"  Skipped {len(missing)} missing files (use --clean to remove orphaned drawers)")
 
-    # Report re-mine instructions grouped by wing and mode
-    if stale:
-        # Group stale files by (wing, ingest_mode, parent_dir) to suggest
-        # the fewest possible mine commands.
-        mine_groups = {}  # (wing, mode, dir) -> count
-        for sf in stale:
-            info = source_files[sf]
-            wing = info["wing"]
-            mode = info.get("ingest_mode", "")
-            parent = str(Path(sf).parent)
-            key = (wing, mode, parent)
-            mine_groups[key] = mine_groups.get(key, 0) + 1
-
-        print(f"\n  To re-mine the {len(stale)} changed files, run:")
-        for (wing, mode, parent), count in mine_groups.items():
-            mode_flag = " --mode convos" if mode == "convos" else ""
-            print(f"    mempalace mine {parent}{mode_flag} --wing {wing} --force")
-
     print(f"\n  Sync complete.")
     print(f"  Deleted: {deleted} stale drawers")
-    if stale:
-        print(f"  Stale drawers removed: re-mine to refresh (see commands above)")
-    print(f"\n{'=' * 55}\n")
+    if re_mined:
+        print(f"  Re-mined: {re_mined} files")
+    sep = '=' * 55
+    print(f"\n{sep}\n")
+
+
+def cmd_hook(args):
+    """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
+    from .hooks_cli import run_hook
+
+    run_hook(hook_name=args.hook, harness=args.harness)
+
+
+def cmd_instructions(args):
+    """Output skill instructions to stdout."""
+    from .instructions_cli import run_instructions
+
+    run_instructions(name=args.name)
 
 
 def cmd_compress(args):
@@ -761,11 +795,33 @@ def main():
         action="store_true",
         help="Show what would change without modifying the palace",
     )
-    p_sync.add_argument(
-        "--agent",
-        default="mempalace",
-        help="Your name — recorded on re-mined drawers (default: mempalace)",
+
+    # hook
+    p_hook = sub.add_parser(
+        "hook",
+        help="Run hook logic (reads JSON from stdin, outputs JSON to stdout)",
     )
+    hook_sub = p_hook.add_subparsers(dest="hook_action")
+    p_hook_run = hook_sub.add_parser("run", help="Execute a hook")
+    p_hook_run.add_argument(
+        "--hook",
+        required=True,
+        help="Hook name to run (e.g. stop, precompact)",
+    )
+    p_hook_run.add_argument(
+        "--harness",
+        default="claude-code",
+        help="AI harness calling the hook (default: claude-code)",
+    )
+
+    # instructions
+    p_instructions = sub.add_parser(
+        "instructions",
+        help="Output skill instructions to stdout",
+    )
+    instructions_sub = p_instructions.add_subparsers(dest="instructions_name")
+    for instr_name in ["init", "search", "mine", "help", "status", "sync"]:
+        instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
 
     # repair
     sub.add_parser(
@@ -780,6 +836,22 @@ def main():
 
     if not args.command:
         parser.print_help()
+        return
+
+    if args.command == "hook":
+        if not getattr(args, "hook_action", None):
+            p_hook.print_help()
+            return
+        cmd_hook(args)
+        return
+
+    if args.command == "instructions":
+        name = getattr(args, "instructions_name", None)
+        if not name:
+            p_instructions.print_help()
+            return
+        args.name = name
+        cmd_instructions(args)
         return
 
     dispatch = {

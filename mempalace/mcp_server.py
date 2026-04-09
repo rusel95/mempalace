@@ -383,6 +383,8 @@ def tool_add_drawer(
     wing: str, room: str, content: str, source_file: str = None, added_by: str = "mcp"
 ):
     """File verbatim content into a wing/room. Checks for duplicates first."""
+    from .miner import add_drawer
+
     col = _get_collection(create=True)
     if not col:
         return _no_palace()
@@ -396,25 +398,25 @@ def tool_add_drawer(
             "matches": dup["matches"],
         }
 
-    drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((content[:100] + datetime.now().isoformat()).encode()).hexdigest()[:16]}"
+    # Use content-derived source so drawer ID is deterministic for idempotency
+    effective_source = source_file or f"mcp:{hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()}"
 
     try:
-        col.add(
-            ids=[drawer_id],
-            documents=[content],
-            metadatas=[
-                {
-                    "wing": wing,
-                    "room": room,
-                    "source_file": source_file or "",
-                    "chunk_index": 0,
-                    "added_by": added_by,
-                    "filed_at": datetime.now().isoformat(),
-                }
-            ],
+        added = add_drawer(
+            collection=col,
+            wing=wing,
+            room=room,
+            content=content,
+            source_file=effective_source,
+            chunk_index=0,
+            agent=added_by,
         )
-        logger.info(f"Filed drawer: {drawer_id} → {wing}/{room}")
-        return {"success": True, "drawer_id": drawer_id, "wing": wing, "room": room}
+        if added:
+            drawer_id = f"drawer_{wing}_{room}_{hashlib.md5((effective_source + '0').encode(), usedforsecurity=False).hexdigest()[:16]}"
+            logger.info(f"Filed drawer: {drawer_id} → {wing}/{room}")
+            return {"success": True, "drawer_id": drawer_id, "wing": wing, "room": room}
+        else:
+            return {"success": True, "reason": "already_exists", "wing": wing, "room": room}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
