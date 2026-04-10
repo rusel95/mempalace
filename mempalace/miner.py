@@ -630,14 +630,16 @@ def mine(
             agent=agent,
             dry_run=dry_run,
         )
+        pct = i * 100 // len(files)
         if drawers == 0 and not dry_run:
             files_skipped += 1
+            print(f"  ~ [{i:4}/{len(files)}] {pct:3}% {filepath.name[:50]:50} (skipped)")
         else:
             total_drawers += drawers
             room = detect_room(filepath, "", rooms, project_path)
             room_counts[room] += 1
             if not dry_run:
-                print(f"  ✓ [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers}")
+                print(f"  ✓ [{i:4}/{len(files)}] {pct:3}% {filepath.name[:50]:50} +{drawers}")
 
     print(f"\n{'=' * 55}")
     print("  Done.")
