@@ -17,6 +17,8 @@ Tools (write):
   mempalace_delete_drawer   — remove a drawer by ID
 """
 
+import argparse
+import os
 import sys
 import json
 import logging
