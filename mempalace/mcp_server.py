@@ -767,6 +767,7 @@ def tool_add_drawer(
             source_file=source_file or "mcp_direct",
             chunk_index=0,
             agent=added_by,
+            drawer_id=drawer_id,
         )
         _metadata_cache = None
         if added:

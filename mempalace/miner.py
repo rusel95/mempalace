@@ -533,9 +533,11 @@ def add_drawer(
     chunk_index: int,
     agent: str,
     content_hash: str = "",  # computed from content if empty
+    drawer_id: str = "",  # overrides computed ID when caller needs a specific key
 ):
     """Add one drawer to the palace."""
-    drawer_id = f"drawer_{wing}_{room}_{hashlib.sha256((source_file + str(chunk_index)).encode()).hexdigest()[:24]}"
+    if not drawer_id:
+        drawer_id = f"drawer_{wing}_{room}_{hashlib.sha256((source_file + str(chunk_index)).encode()).hexdigest()[:24]}"
     if not content_hash:
         content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
     try:
@@ -584,22 +586,22 @@ def process_file(
     agent: str,
     dry_run: bool,
     closets_col=None,
-) -> tuple:
-    """Read, chunk, route, and file one file. Returns (drawer_count, room_name)."""
+) -> int:
+    """Read, chunk, route, and file one file. Returns drawer count."""
 
     # Skip if already filed
     source_file = str(filepath)
     if not dry_run and file_already_mined(collection, source_file, check_mtime=True):
-        return 0, "general"
+        return 0
 
     try:
         content = filepath.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return 0, "general"
+        return 0
 
     content = content.strip()
     if len(content) < MIN_CHUNK_SIZE:
-        return 0, "general"
+        return 0
 
     room = detect_room(filepath, content, rooms, project_path)
     chunks = chunk_text(content, source_file)
@@ -615,7 +617,7 @@ def process_file(
     with mine_lock(source_file):
         # Re-check after acquiring lock — another agent may have just finished
         if file_already_mined(collection, source_file, check_mtime=True):
-            return 0, room
+            return 0
 
         # Purge stale drawers for this file before re-inserting the fresh chunks.
         # Converts modified-file re-mines from upsert-over-existing-IDs (which hits

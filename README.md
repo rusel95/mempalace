@@ -142,7 +142,7 @@ Restart Claude Code, then type `/skills` to verify "mempalace" appears.
 claude mcp add mempalace -- python -m mempalace.mcp_server
 ```
 
-Now your AI has 29 tools available through MCP. Ask it anything:
+Now your AI has 30 tools available through MCP. Ask it anything:
 
 > *"What did we decide about auth last month?"*
 
@@ -482,6 +482,7 @@ claude mcp add mempalace -- python -m mempalace.mcp_server
 | `mempalace_get_taxonomy` | Full wing → room → count tree |
 | `mempalace_search` | Semantic search with wing/room filters |
 | `mempalace_check_duplicate` | Check before filing |
+| `mempalace_sync_status` | Check palace freshness — detect stale, missing, and fresh source files |
 | `mempalace_get_aaak_spec` | AAAK dialect reference |
 
 **Palace (write)**
@@ -665,7 +666,7 @@ Plain text. Becomes Layer 0 — loaded every session.
 | `cli.py` | CLI entry point |
 | `config.py` | Configuration loading and defaults |
 | `normalize.py` | Converts 5 chat formats to standard transcript |
-| `mcp_server.py` | MCP server — 29 tools, AAAK auto-teach, memory protocol |
+| `mcp_server.py` | MCP server — 30 tools, AAAK auto-teach, memory protocol |
 | `miner.py` | Project file ingest |
 | `convo_miner.py` | Conversation ingest — chunks by exchange pair |
 | `searcher.py` | Semantic search via ChromaDB |
@@ -689,7 +690,7 @@ mempalace/
 ├── README.md                  ← you are here
 ├── mempalace/                 ← core package (README)
 │   ├── cli.py                 ← CLI entry point
-│   ├── mcp_server.py          ← MCP server (29 tools)
+│   ├── mcp_server.py          ← MCP server (30 tools)
 │   ├── knowledge_graph.py     ← temporal entity graph
 │   ├── palace_graph.py        ← room navigation graph
 │   ├── dialect.py             ← AAAK compression
