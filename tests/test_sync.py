@@ -50,9 +50,7 @@ def test_content_hash_stored_by_project_miner():
     col = get_collection(palace_path)
 
     # Create a source file
-    src = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix="test_hash_"
-    )
+    src = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, prefix="test_hash_")
     src.write("def hello():\n    print('Hello world')\n    return True\n" * 5)
     src.close()
 
@@ -87,8 +85,14 @@ def test_content_hash_stored_by_convo_miner():
 
     # Create a conversation file with enough content for chunking
     convo = [
-        {"role": "user", "content": "Can you explain how context engineering works in modern AI systems?"},
-        {"role": "assistant", "content": "Context engineering is the practice of designing the information that goes into an LLM prompt. It includes selecting relevant documents, structuring the prompt, and managing the context window efficiently."},
+        {
+            "role": "user",
+            "content": "Can you explain how context engineering works in modern AI systems?",
+        },
+        {
+            "role": "assistant",
+            "content": "Context engineering is the practice of designing the information that goes into an LLM prompt. It includes selecting relevant documents, structuring the prompt, and managing the context window efficiently.",
+        },
     ]
     convo_file = os.path.join(convo_dir, "test_chat.json")
     with open(convo_file, "w") as f:
@@ -216,6 +220,7 @@ def test_force_clean_deletes_drawers():
 
     # Import and run force clean
     from mempalace.cli import _force_clean
+
     _force_clean(palace_path, src_dir)
 
     # Re-check — should be cleaned (resolve path for macOS /var → /private/var)
@@ -243,6 +248,7 @@ def test_force_clean_does_not_affect_other_dirs():
     assert col.count() == 2
 
     from mempalace.cli import _force_clean
+
     _force_clean(palace_path, dir_a)
 
     client2 = chromadb.PersistentClient(path=palace_path)
@@ -304,6 +310,7 @@ def test_sync_atomic_remine_project_file():
 
     # Step 3: run sync via cmd_sync args simulation
     import argparse
+
     args = argparse.Namespace(
         palace=palace_path,
         dir=None,

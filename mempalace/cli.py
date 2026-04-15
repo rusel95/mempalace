@@ -36,14 +36,6 @@ from pathlib import Path
 from .config import MempalaceConfig
 
 
-def _resolve_path(p: str) -> str:
-    """Resolve a path, handling symlinks (e.g. macOS /var → /private/var)."""
-    try:
-        return str(Path(p).resolve())
-    except OSError:
-        return p
-
-
 _MEMPALACE_PROJECT_FILES = ("mempalace.yaml", "entities.json")
 
 
@@ -159,40 +151,9 @@ def cmd_mine(args):
 
 def _force_clean(palace_path: str, source_dir: str):
     """Delete all drawers from files under source_dir — used by --force re-mine."""
-    import chromadb
-    from pathlib import Path
+    from .sync import force_clean
 
-    try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
-    except Exception:
-        return  # No palace yet — nothing to clean
-
-    source_prefix = str(Path(source_dir).expanduser().resolve())
-    batch_size = 500
-    offset = 0
-    to_delete = []
-
-    while True:
-        batch = col.get(limit=batch_size, offset=offset, include=["metadatas"])
-        if not batch["ids"]:
-            break
-        for drawer_id, meta in zip(batch["ids"], batch["metadatas"]):
-            sf = meta.get("source_file", "")
-            # Resolve symlinks for consistent comparison (macOS /var → /private/var)
-            try:
-                sf_resolved = str(Path(sf).resolve()) if sf else ""
-            except OSError:
-                sf_resolved = sf
-            if sf_resolved.startswith(source_prefix):
-                to_delete.append(drawer_id)
-        offset += len(batch["ids"])
-
-    if to_delete:
-        print(f"\n  --force: deleting {len(to_delete)} existing drawers from {source_prefix}...")
-        for i in range(0, len(to_delete), 100):
-            col.delete(ids=to_delete[i : i + 100])
-        print("  Deleted. Re-mining fresh.\n")
+    force_clean(palace_path=palace_path, source_dir=source_dir)
 
 
 def cmd_search(args):
@@ -362,208 +323,21 @@ def cmd_repair(args):
     print(f"\n{'=' * 55}\n")
 
 
-def cmd_sync(args):  # noqa: C901
-    """Sync palace with source files — re-mine changed files, report stale drawers."""
-    import chromadb
-    from pathlib import Path
+def cmd_sync(args):
+    """Sync palace with source files — thin CLI wrapper around `sync.sync_palace`."""
+    from .sync import sync_palace
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
 
-    print(f"\n{'=' * 55}")
-    print("  MemPalace Sync")
-    print(f"{'=' * 55}\n")
-
     try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
-    except Exception:
-        print(f"  No palace found at {palace_path}")
-        print("  Run: mempalace init <dir> then mempalace mine <dir>")
+        sync_palace(
+            palace_path=palace_path,
+            source_dir=args.dir,
+            clean=args.clean,
+            dry_run=args.dry_run,
+        )
+    except FileNotFoundError:
         sys.exit(1)
-
-    total = col.count()
-    if total == 0:
-        print("  Palace is empty. Nothing to sync.")
-        return
-
-    # Collect all unique source files and their content hashes from the palace
-    print(f"  Scanning {total} drawers for source files...")
-    source_files = {}  # source_file -> {hash, drawer_ids, wing}
-    batch_size = 500
-    offset = 0
-    while offset < total:
-        batch = col.get(limit=batch_size, offset=offset, include=["metadatas"])
-        if not batch["ids"]:
-            break
-        for drawer_id, meta in zip(batch["ids"], batch["metadatas"]):
-            sf = meta.get("source_file", "")
-            if not sf:
-                continue
-            if sf not in source_files:
-                source_files[sf] = {
-                    "hash": meta.get("content_hash", ""),
-                    "drawer_ids": [],
-                    "wing": meta.get("wing", ""),
-                    "ingest_mode": meta.get("ingest_mode", ""),
-                }
-            source_files[sf]["drawer_ids"].append(drawer_id)
-        offset += len(batch["ids"])
-
-    print(f"  Found {len(source_files)} unique source files\n")
-
-    # Filter by directory if specified
-    if args.dir:
-        sync_dir = str(Path(args.dir).expanduser().resolve())
-        source_files = {
-            sf: info for sf, info in source_files.items() if _resolve_path(sf).startswith(sync_dir)
-        }
-        print(f"  Filtered to {len(source_files)} files in {sync_dir}\n")
-
-    if not source_files:
-        print("  No source files to check.")
-        return
-
-    # Check each source file for changes
-    stale = []  # files that changed
-    missing = []  # files that no longer exist
-    fresh = 0  # files unchanged
-    no_hash = 0  # files without content_hash (mined before sync feature)
-
-    for sf, info in sorted(source_files.items()):
-        if not os.path.exists(sf):
-            missing.append(sf)
-            continue
-
-        stored_hash = info["hash"]
-        if not stored_hash:
-            no_hash += 1
-            continue
-
-        try:
-            from .miner import file_content_hash
-
-            current_hash = file_content_hash(Path(sf))
-        except OSError:
-            missing.append(sf)
-            continue
-
-        if current_hash != stored_hash:
-            stale.append(sf)
-        else:
-            fresh += 1
-
-    # Report
-    print(f"  Fresh (unchanged):     {fresh}")
-    print(f"  Stale (changed):       {len(stale)}")
-    print(f"  Missing (deleted):     {len(missing)}")
-    if no_hash:
-        print(f"  No hash (legacy):      {no_hash} (re-mine with --force to add hashes)")
-    print()
-
-    if stale:
-        print("  Changed files:")
-        for sf in stale[:20]:
-            n = len(source_files[sf]["drawer_ids"])
-            print(f"    {Path(sf).name} ({n} drawers)")
-        if len(stale) > 20:
-            print(f"    ... and {len(stale) - 20} more")
-        print()
-
-    if missing:
-        print("  Missing files:")
-        for sf in missing[:10]:
-            n = len(source_files[sf]["drawer_ids"])
-            print(f"    {Path(sf).name} ({n} drawers)")
-        if len(missing) > 10:
-            print(f"    ... and {len(missing) - 10} more")
-        print()
-
-    if not stale and not missing:
-        print("  Everything is up to date!")
-        print(f"\n{'=' * 55}\n")
-        return
-
-    # Dry run — stop here
-    if args.dry_run:
-        total_stale = sum(len(source_files[sf]["drawer_ids"]) for sf in stale)
-        total_missing = sum(len(source_files[sf]["drawer_ids"]) for sf in missing)
-        print(f"  [DRY RUN] Would delete {total_stale} stale + {total_missing} orphaned drawers")
-        print(f"  [DRY RUN] Would re-mine {len(stale)} changed files")
-        print(f"\n{'=' * 55}\n")
-        return
-
-    # Atomic per-file: delete stale drawers then re-mine immediately
-    deleted = 0
-    re_mined = 0
-
-    if stale:
-        from .miner import process_file, file_content_hash
-        from .convo_miner import mine_convos
-
-        print(f"  Re-syncing {len(stale)} changed files...")
-        for sf in stale:
-            info = source_files[sf]
-            ids = info["drawer_ids"]
-            wing = info["wing"]
-            ingest_mode = info.get("ingest_mode", "")
-
-            # Step 1: delete stale drawers for this file
-            for i in range(0, len(ids), 100):
-                col.delete(ids=ids[i : i + 100])
-            deleted += len(ids)
-
-            # Step 2: re-mine this specific file immediately
-            filepath = Path(sf)
-            try:
-                if ingest_mode == "convos":
-                    mine_convos(
-                        convo_dir=str(filepath.parent),
-                        palace_path=palace_path,
-                        wing=wing,
-                        agent="mempalace",
-                        filepath_filter=str(filepath),
-                    )
-                    re_mined += 1
-                    print(f"    {filepath.name}: re-mined (convos)")
-                else:
-                    rooms = [{"name": "general", "keywords": []}]
-                    n = process_file(
-                        filepath=filepath,
-                        project_path=filepath.parent,
-                        collection=col,
-                        wing=wing,
-                        rooms=rooms,
-                        agent="mempalace",
-                        dry_run=False,
-                    )
-                    if n > 0:
-                        re_mined += 1
-                        print(f"    {filepath.name}: {n} drawers re-mined")
-                    else:
-                        print(f"    {filepath.name}: skipped (empty or too small)")
-            except Exception as e:
-                print(f"    {filepath.name}: ERROR — {e}")
-
-    # Delete drawers for missing files (if --clean flag)
-    if missing and args.clean:
-        print("  Cleaning orphaned drawers...")
-        orphan_count = 0
-        for sf in missing:
-            ids = source_files[sf]["drawer_ids"]
-            for i in range(0, len(ids), 100):
-                col.delete(ids=ids[i : i + 100])
-            orphan_count += len(ids)
-        deleted += orphan_count
-        print(f"  Cleaned {orphan_count} orphaned drawers")
-    elif missing:
-        print(f"  Skipped {len(missing)} missing files (use --clean to remove orphaned drawers)")
-
-    print("\n  Sync complete.")
-    print(f"  Deleted: {deleted} stale drawers")
-    if re_mined:
-        print(f"  Re-mined: {re_mined} files")
-    sep = "=" * 55
-    print(f"\n{sep}\n")
 
 
 def cmd_mcp(args):

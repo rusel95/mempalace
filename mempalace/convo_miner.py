@@ -299,7 +299,9 @@ def scan_convos(convo_dir: str) -> list:
 # =============================================================================
 
 
-def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extract_mode, content_hash=""):
+def _file_chunks_locked(
+    collection, source_file, chunks, wing, room, agent, extract_mode, content_hash=""
+):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
     Combines the per-file serialization that prevents concurrent agents from
@@ -474,7 +476,13 @@ def mine_convos(  # noqa: C901
         # Lock + purge stale + file fresh chunks. Lock serializes concurrent
         # agents; purge removes pre-v2 drawers so the schema bump applies.
         drawers_added, room_delta, skipped = _file_chunks_locked(
-            collection, source_file, chunks, wing, room, agent, extract_mode,
+            collection,
+            source_file,
+            chunks,
+            wing,
+            room,
+            agent,
+            extract_mode,
             content_hash=file_hash,
         )
         if skipped:
