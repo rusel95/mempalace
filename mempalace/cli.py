@@ -73,12 +73,25 @@ def cmd_init(args):
     from .entity_detector import scan_for_detection, detect_entities, confirm_entities
     from .room_detector_local import detect_rooms_local
 
+    cfg = MempalaceConfig()
+
+    # Resolve entity-detection languages: --lang overrides config.
+    lang_arg = getattr(args, "lang", None)
+    if lang_arg:
+        languages = [s.strip() for s in lang_arg.split(",") if s.strip()] or ["en"]
+        cfg.set_entity_languages(languages)
+    else:
+        languages = cfg.entity_languages
+    languages_tuple = tuple(languages)
+
     # Pass 1: auto-detect people and projects from file content
     print(f"\n  Scanning for entities in: {args.dir}")
+    if languages_tuple != ("en",):
+        print(f"  Languages: {', '.join(languages_tuple)}")
     files = scan_for_detection(args.dir)
     if files:
         print(f"  Reading {len(files)} files...")
-        detected = detect_entities(files)
+        detected = detect_entities(files, languages=languages_tuple)
         total = len(detected["people"]) + len(detected["projects"]) + len(detected["uncertain"])
         if total > 0:
             confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
@@ -93,7 +106,7 @@ def cmd_init(args):
 
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False))
-    MempalaceConfig().init()
+    cfg.init()
 
     # Pass 3: protect git repos from accidentally committing per-project files
     _ensure_mempalace_files_gitignored(args.dir)
@@ -477,6 +490,16 @@ def main():
         "--yes",
         action="store_true",
         help="Auto-accept all detected entities (non-interactive)",
+    )
+    p_init.add_argument(
+        "--lang",
+        default=None,
+        help=(
+            "Comma-separated language codes for entity detection "
+            "(e.g. 'en' or 'en,pt-br'). Defaults to value from config "
+            "(MEMPALACE_ENTITY_LANGUAGES env var or config.json), or 'en'. "
+            "When given, the value is also persisted to config.json."
+        ),
     )
 
     # mine

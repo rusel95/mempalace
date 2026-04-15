@@ -198,6 +198,42 @@ class MempalaceConfig:
         return self._file_config.get("hall_keywords", DEFAULT_HALL_KEYWORDS)
 
     @property
+    def entity_languages(self):
+        """Languages whose entity-detection patterns should be applied.
+
+        Reads from env var ``MEMPALACE_ENTITY_LANGUAGES`` (comma-separated)
+        first, then the ``entity_languages`` field in ``config.json``,
+        defaulting to ``["en"]``.
+        """
+        env_val = os.environ.get("MEMPALACE_ENTITY_LANGUAGES") or os.environ.get(
+            "MEMPAL_ENTITY_LANGUAGES"
+        )
+        if env_val:
+            return [s.strip() for s in env_val.split(",") if s.strip()] or ["en"]
+        cfg = self._file_config.get("entity_languages")
+        if isinstance(cfg, list) and cfg:
+            return [str(s) for s in cfg]
+        return ["en"]
+
+    def set_entity_languages(self, languages):
+        """Persist the entity-detection language list to ``config.json``."""
+        normalized = [s.strip() for s in languages if s and s.strip()]
+        if not normalized:
+            normalized = ["en"]
+        self._file_config["entity_languages"] = normalized
+        self._config_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(self._file_config, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
+        try:
+            self._config_file.chmod(0o600)
+        except (OSError, NotImplementedError):
+            pass
+        return normalized
+
+    @property
     def hook_silent_save(self):
         """Whether the stop hook saves directly (True) or blocks for MCP calls (False)."""
         return self._file_config.get("hooks", {}).get("silent_save", True)

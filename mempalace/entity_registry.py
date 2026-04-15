@@ -583,15 +583,19 @@ class EntityRegistry:
 
     # ── Learn from sessions ──────────────────────────────────────────────────
 
-    def learn_from_text(self, text: str, min_confidence: float = 0.75) -> list:
+    def learn_from_text(self, text: str, min_confidence: float = 0.75, languages=("en",)) -> list:
         """
         Scan session text for new entity candidates.
         Returns list of newly discovered candidates for review.
+
+        ``languages`` is forwarded to entity detection — pass the user's
+        configured ``MempalaceConfig().entity_languages`` to match the
+        locales used at ``mempalace init`` time.
         """
         from mempalace.entity_detector import extract_candidates, score_entity, classify_entity
 
         lines = text.splitlines()
-        candidates = extract_candidates(text)
+        candidates = extract_candidates(text, languages=languages)
         new_candidates = []
 
         for name, frequency in candidates.items():
@@ -599,7 +603,7 @@ class EntityRegistry:
             if name in self.people or name in self.projects:
                 continue
 
-            scores = score_entity(name, text, lines)
+            scores = score_entity(name, text, lines, languages=languages)
             entity = classify_entity(name, frequency, scores)
 
             if entity["type"] == "person" and entity["confidence"] >= min_confidence:
