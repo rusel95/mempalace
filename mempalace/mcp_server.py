@@ -1075,7 +1075,7 @@ def tool_kg_add(
     All temporal and provenance fields are optional. ``valid_to`` lets callers
     backfill historical facts with a known end date in a single call (instead
     of a separate ``kg_invalidate``). ``source_file`` and ``source_drawer_id``
-    are RFC 002 §5.5 provenance fields populated by adapters / bulk importers.
+    are RFC 002 provenance fields populated by adapters / bulk importers.
 
     TODO(#1283): once the ISO-8601 validation PR lands, wire ``validate_iso_date``
     over ``valid_from`` / ``valid_to`` here so malformed dates fail fast at the
@@ -1509,7 +1509,7 @@ TOOLS = {
                 },
                 "source_drawer_id": {
                     "type": "string",
-                    "description": "Drawer ID the fact was extracted from (optional, RFC 002 §5.5 provenance)",
+                    "description": "Drawer ID the fact was extracted from (optional, RFC 002 provenance)",
                 },
             },
             "required": ["subject", "predicate", "object"],
